@@ -11,20 +11,19 @@ export async function logTx(provider: Provider, txId: string, verbose: boolean =
   }
 };
 
-
 export async function execute(
   provider: Provider,
   instructions: TransactionInstruction[],
   signers: Signer[],
-  skipPreflight: boolean = false
+  skipPreflight: boolean = false,
+  verbose: boolean = false,
 ): Promise<String> {
   let tx = new Transaction();
   instructions.map((ix) => { tx = tx.add(ix) });
-  const txid = await provider.send(tx, signers, {
-    commitment: "confirmed",
+  const txid = await provider.connection.sendTransaction(tx, signers, {
     skipPreflight,
   });
-  await logTx(provider, txid, false);
+  await logTx(provider, txid, verbose);
   return txid;
 }
 export function num32ToBuffer(num: number) {

@@ -26,7 +26,7 @@ import {
   TOKEN_PROGRAM_ID,
   Token
 } from "@solana/spl-token";
-import { logTx } from "./utils";
+import { execute, logTx } from "./utils";
 
 // @ts-ignore
 let Bubblegum;
@@ -113,6 +113,7 @@ describe("bubblegum", () => {
           authority: authority,
           gummyrollProgram: GummyrollProgramId,
           merkleSlab: merkleRollKeypair.publicKey,
+          systemProgram: SystemProgram.programId
         },
         signers: [payer],
       }
@@ -199,14 +200,8 @@ describe("bubblegum", () => {
         signers: [payer],
       });
       console.log(" - Minting to tree");
-      const mintTx = await Bubblegum.provider.send(
-        new Transaction().add(mintIx),
-        [payer],
-        {
-          skipPreflight: true,
-          commitment: "confirmed",
-        }
-      );
+      await execute(Bubblegum.provider, [mintIx], [payer], false);
+
       const leafHash = Buffer.from(keccak_256.digest(mintIx.data.slice(9)));
       const creatorHash = Buffer.from(keccak_256.digest([]));
       let merkleRollAccount =
@@ -220,7 +215,7 @@ describe("bubblegum", () => {
       console.log(" - Transferring Ownership");
       const nonceInfo = await (Bubblegum.provider.connection as web3Connection).getAccountInfo(nonceAccount);
       const leafNonce = (new BN(nonceInfo.data.slice(8, 24), "le")).sub(new BN(1));
-      let transferTx = await Bubblegum.rpc.transfer(
+      let transferIx = await Bubblegum.instruction.transfer(
         version,
         onChainRoot,
         leafHash,
@@ -239,6 +234,7 @@ describe("bubblegum", () => {
           signers: [payer],
         }
       );
+      await execute(Bubblegum.provider, [transferIx], [payer], true);
 
       merkleRollAccount = await Bubblegum.provider.connection.getAccountInfo(
         merkleRollKeypair.publicKey
@@ -296,13 +292,7 @@ describe("bubblegum", () => {
         }
       );
       delTransferIx.keys[2].isSigner = true;
-      let delTransferTx = await Bubblegum.provider.send(
-        new Transaction().add(delTransferIx),
-        [delegateKey],
-        {
-          commitment: "confirmed",
-        }
-      );
+      await execute(Bubblegum.provider, [delTransferIx], [delegateKey], true)
 
       merkleRollAccount = await Bubblegum.provider.connection.getAccountInfo(
         merkleRollKeypair.publicKey

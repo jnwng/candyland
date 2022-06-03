@@ -13,14 +13,17 @@ use spl_token::state::Mint as SplMint;
 
 pub mod state;
 pub mod utils;
+pub mod error;
 
 use crate::state::metaplex_anchor::MplTokenMetadata;
 use crate::state::{
+    authority::{GummyrollTreeAuthority, GUMMYROLL_TREE_AUTHORITY_SIZE},
     leaf_schema::{LeafSchema, Version},
     metaplex_adapter::{MetadataArgs, TokenProgramVersion},
     metaplex_anchor::{MasterEdition, TokenMetadata},
     Nonce, Voucher,
 };
+use crate::error::BubblegumError;
 use crate::utils::{append_leaf, insert_or_append_leaf, replace_leaf};
 
 const NONCE_SIZE: usize = 8 + 16;
@@ -46,17 +49,79 @@ pub struct InitNonce<'info> {
 
 #[derive(Accounts)]
 pub struct CreateTree<'info> {
+    #[account(mut)]
     pub tree_creator: Signer<'info>,
     #[account(
+        init,
         seeds = [merkle_slab.key().as_ref()],
         bump,
+        space=GUMMYROLL_TREE_AUTHORITY_SIZE + 64,
+        payer=tree_creator,
     )]
     /// CHECK: This account is neither written to nor read from.
-    pub authority: UncheckedAccount<'info>,
+    pub authority: Account<'info, GummyrollTreeAuthority>,
     pub gummyroll_program: Program<'info, Gummyroll>,
     #[account(zero)]
     /// CHECK: This account must be all zeros
     pub merkle_slab: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct TransferTreeOwner<'info> {
+    pub tree_owner: Signer<'info>,
+    /// CHECK: this account is not read from
+    pub new_owner: AccountInfo<'info>,
+    #[account(
+        seeds=[authority.tree_id.as_ref()],
+        bump,
+        mut, 
+        constraint = *tree_owner.key == authority.owner
+    )]
+    pub authority: Account<'info, GummyrollTreeAuthority>,
+}
+
+#[derive(Accounts)]
+pub struct TransferTreeDelegate<'info> {
+    pub tree_delegate: Signer<'info>,
+    /// CHECK: this account is not read from
+    pub new_delegate: AccountInfo<'info>,
+    #[account(
+        seeds=[authority.tree_id.as_ref()],
+        bump,
+        mut, 
+        constraint = (*tree_delegate.key == authority.owner) || (*tree_delegate.key == authority.delegate)
+    )]
+    pub authority: Account<'info, GummyrollTreeAuthority>,
+}
+
+#[derive(Accounts)]
+pub struct SetTreeAppendAuthority<'info> {
+    pub tree_delegate: Signer<'info>,
+    /// CHECK: this account is not read from
+    pub new_append_authority: AccountInfo<'info>,
+    #[account(
+        seeds=[authority.tree_id.as_ref()],
+        bump,
+        mut, 
+        constraint = (*tree_delegate.key == authority.owner) || (*tree_delegate.key == authority.delegate)
+    )]
+    pub authority: Account<'info, GummyrollTreeAuthority>,
+}
+
+#[derive(Accounts)]
+pub struct RemoveAppendAuthority<'info> {
+    pub append_authority: Signer<'info>,
+    /// CHECK: this account is not read from
+    #[account(constraint = authority.append_allowlist.contains(append_authority.key))]
+    pub authority_to_remove: AccountInfo<'info>,
+    #[account(
+        seeds=[authority.tree_id.as_ref()],
+        bump,
+        mut, 
+        constraint = (*append_authority.key == authority.owner) || (*append_authority.key == authority.delegate) || authority.append_allowlist.contains(append_authority.key) 
+    )]
+    pub authority: Account<'info, GummyrollTreeAuthority>,
 }
 
 #[derive(Accounts)]
@@ -323,12 +388,49 @@ pub mod bubblegum {
             ctx.accounts.gummyroll_program.to_account_info(),
             gummyroll::cpi::accounts::Initialize {
                 authority: ctx.accounts.authority.to_account_info(),
-                append_authority: ctx.accounts.tree_creator.to_account_info(),
+                append_authority: ctx.accounts.authority.to_account_info(),
                 merkle_roll: merkle_slab,
             },
             authority_pda_signer,
         );
         gummyroll::cpi::init_empty_gummyroll(cpi_ctx, max_depth, max_buffer_size)
+    }
+
+    pub fn transfer_tree_owner(
+        ctx: Context<TransferTreeOwner>,
+    ) -> Result<()> {
+        ctx.accounts.authority.owner = ctx.accounts.new_owner.key();
+        Ok(())
+    }
+
+    pub fn transfer_tree_delegate(
+        ctx: Context<TransferTreeDelegate>,
+    ) -> Result<()> {
+        ctx.accounts.authority.delegate = ctx.accounts.new_delegate.key();
+        Ok(())
+    }
+
+    pub fn set_append_authority(
+        ctx: Context<SetTreeAppendAuthority>,
+        index: u8,
+    ) -> Result<()> {
+        if (index as usize) >= ctx.accounts.authority.append_allowlist.len() {
+            return err!(BubblegumError::AppendAllowlistIndexOutOfBounds);
+        }
+        ctx.accounts.authority.append_allowlist[index as usize] = ctx.accounts.new_append_authority.key();
+        Ok(())
+    }
+
+    pub fn remove_append_authority(
+        ctx: Context<RemoveAppendAuthority>,
+    ) -> Result<()> {
+        match ctx.accounts.authority.append_allowlist.iter().position(|&append_auth| append_auth == *ctx.accounts.authority_to_remove.key) {
+            Some(idx) => { ctx.accounts.authority.append_allowlist[idx] = Pubkey::new_from_array([0; 32]) }
+            None => {
+                return err!(BubblegumError::AppendAuthorityNotFound);
+            }
+        }
+        Ok(())
     }
 
     pub fn mint(ctx: Context<Mint>, version: Version, message: MetadataArgs) -> Result<()> {
@@ -364,7 +466,7 @@ pub mod bubblegum {
             *ctx.bumps.get("authority").unwrap(),
             &ctx.accounts.gummyroll_program.to_account_info(),
             &ctx.accounts.authority.to_account_info(),
-            &ctx.accounts.mint_authority.to_account_info(),
+            &ctx.accounts.authority.to_account_info(),
             &ctx.accounts.merkle_slab.to_account_info(),
             leaf.to_node(),
         )
