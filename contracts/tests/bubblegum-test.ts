@@ -3,7 +3,7 @@ import { keccak_256 } from "js-sha3";
 import { BN, Provider, Program, AccountClient } from "@project-serum/anchor";
 import { Bubblegum } from "../target/types/bubblegum";
 import { Gummyroll } from "../target/types/gummyroll";
-import { Metadata, MetadataArgs, PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
+import { Key, Metadata, MetadataArgs, PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
 import {
   PublicKey,
   Keypair,
@@ -81,11 +81,11 @@ async function createMintIx(bubblegum: Program<Bubblegum>,
   owner: PublicKey,
   delegate: PublicKey,
   merkleSlab: PublicKey,
-  mintAuthority: PublicKey
+  mintAuthority: Keypair,
 ): Promise<TransactionInstruction> {
   return bubblegum.instruction.mint(version, metadata, {
     accounts: {
-      mintAuthority,
+      mintAuthority: mintAuthority.publicKey,
       authority: await getTreeAuthority(bubblegum, merkleSlab),
       nonce: await getNonceAccount(bubblegum),
       gummyrollProgram: GummyrollProgramId,
@@ -93,7 +93,7 @@ async function createMintIx(bubblegum: Program<Bubblegum>,
       delegate,
       merkleSlab,
     },
-    signers: [payer],
+    signers: [payer, mintAuthority],
   });
 }
 
@@ -111,6 +111,26 @@ function createRemoveAppendAuthorityIx(
     },
     signers: [appendAuthority]
   })
+}
+
+function createSetAppendAuthorityIx(
+  bubblegum: Program<Bubblegum>,
+  index: number,
+  treeDelegate: Keypair,
+  newAppendAuthority: PublicKey,
+  authority: PublicKey,
+): TransactionInstruction {
+  return bubblegum.instruction.setAppendAuthority(
+    index,
+    {
+      accounts: {
+        treeDelegate: treeDelegate.publicKey,
+        newAppendAuthority,
+        authority,
+      },
+      signers: [treeDelegate]
+    }
+  );
 }
 
 describe("bubblegum", () => {
@@ -264,7 +284,7 @@ describe("bubblegum", () => {
     it("Mint to tree", async () => {
       const metadata = createExampleMetadata("test", "test", "www.solana.com");
       let version = { v0: {} };
-      const mintIx = await createMintIx(Bubblegum, metadata, version, payer, payer.publicKey, payer.publicKey, merkleRollKeypair.publicKey, payer.publicKey);
+      const mintIx = await createMintIx(Bubblegum, metadata, version, payer, payer.publicKey, payer.publicKey, merkleRollKeypair.publicKey, payer);
       console.log(" - Minting to tree");
       await execute(Bubblegum.provider, [mintIx], [payer], false);
 
@@ -538,7 +558,7 @@ describe("bubblegum", () => {
         payer.publicKey,
         payer.publicKey,
         merkleRollKeypair.publicKey,
-        payer.publicKey,
+        payer,
       );
       try {
         await execute(Bubblegum.provider, [, mintIx], [payer], true, true);
@@ -546,6 +566,44 @@ describe("bubblegum", () => {
       } catch (e) {
         assert(true, "Successfully prevented payer from minting");
       }
+    });
+    it("Concurrently append into tree", async () => {
+
+      // Create 5 random keys, set them as append publickeys
+      const ALLOWLIST_SIZE = 5;
+      const authIxs = [];
+      const appendIxs = [];
+      const keypairs = [];
+      for (let i = 0; i < ALLOWLIST_SIZE; i++) {
+        const keypair = Keypair.generate();
+        const setAppendAuthorityIx = createSetAppendAuthorityIx(
+          Bubblegum,
+          i,
+          payer,
+          keypair.publicKey,
+          treeAuthority,
+        );
+        const metadata = createExampleMetadata(`${i}`, `${i}`, "www.solana.com");
+        const version = { v0: {} }
+        const mintIx = await createMintIx(
+          Bubblegum,
+          metadata,
+          version,
+          payer,
+          payer.publicKey,
+          payer.publicKey,
+          merkleRollKeypair.publicKey,
+          keypair,
+        );
+        keypairs.push(keypair);
+        authIxs.push(setAppendAuthorityIx);
+        appendIxs.push(mintIx);
+      }
+
+      // All appends should succeed
+      const allIxs = [].concat(authIxs, appendIxs);
+      const allKeypairs = [payer].concat(keypairs);
+      await execute(Bubblegum.provider, allIxs, allKeypairs, true);
     });
   });
 });
