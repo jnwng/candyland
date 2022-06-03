@@ -1,6 +1,7 @@
 import { Provider } from "@project-serum/anchor";
 import { TransactionInstruction, Transaction, Signer } from "@solana/web3.js";
 
+/// Confirms and logs transaction
 export async function logTx(provider: Provider, txId: string, verbose: boolean = true) {
   await provider.connection.confirmTransaction(txId, "confirmed");
   if (verbose) {
@@ -11,6 +12,7 @@ export async function logTx(provider: Provider, txId: string, verbose: boolean =
   }
 };
 
+/// Confirms, logs, and throws if transaction has an error
 export async function execute(
   provider: Provider,
   instructions: TransactionInstruction[],
@@ -23,7 +25,17 @@ export async function execute(
   const txid = await provider.connection.sendTransaction(tx, signers, {
     skipPreflight,
   });
-  await logTx(provider, txid, verbose);
+  await provider.connection.confirmTransaction(txid, "confirmed");
+  const confirmedTx = await provider.connection.getConfirmedTransaction(txid, "confirmed");
+  if (verbose || confirmedTx.meta.err) {
+    console.log(
+      confirmedTx.meta
+        .logMessages
+    );
+  }
+  if (confirmedTx.meta.err) {
+    throw new Error(confirmedTx.meta.err.toString());
+  }
   return txid;
 }
 export function num32ToBuffer(num: number) {

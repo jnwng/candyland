@@ -1,9 +1,9 @@
 import * as anchor from "@project-serum/anchor";
 import { keccak_256 } from "js-sha3";
-import { BN, Provider, Program } from "@project-serum/anchor";
+import { BN, Provider, Program, AccountClient } from "@project-serum/anchor";
 import { Bubblegum } from "../target/types/bubblegum";
 import { Gummyroll } from "../target/types/gummyroll";
-import { PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
+import { Metadata, MetadataArgs, PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
 import {
   PublicKey,
   Keypair,
@@ -11,6 +11,7 @@ import {
   Transaction,
   Connection as web3Connection,
   SYSVAR_RENT_PUBKEY,
+  TransactionInstruction,
 } from "@solana/web3.js";
 import { assert } from "chai";
 
@@ -27,11 +28,90 @@ import {
   Token
 } from "@solana/spl-token";
 import { execute, logTx } from "./utils";
+import { assertConfirmedTransaction } from "@metaplex-foundation/amman";
 
 // @ts-ignore
 let Bubblegum;
 // @ts-ignore
 let GummyrollProgramId;
+
+function createExampleMetadata(name: String, symbol: String, uri: String) {
+  return {
+    name,
+    symbol,
+    uri,
+    sellerFeeBasisPoints: 0,
+    primarySaleHappened: false,
+    isMutable: false,
+    editionNonce: null,
+    tokenStandard: null,
+    tokenProgramVersion: {
+      original: {},
+    },
+    collection: null,
+    uses: null,
+    creators: [],
+  };
+}
+
+async function getNonceAccount(bubblegum: Program<Bubblegum>): Promise<PublicKey> {
+  let [nonce] = await PublicKey.findProgramAddress(
+    [Buffer.from("bubblegum")],
+    bubblegum.programId
+  );
+  return nonce;
+}
+
+async function getTreeAuthority(bubblegum: Program<Bubblegum>, merkleSlab: PublicKey): Promise<PublicKey> {
+  let [authority] = await PublicKey.findProgramAddress(
+    [merkleSlab.toBuffer()],
+    bubblegum.programId
+  );
+  return authority;
+}
+
+type Version = {
+  v0: Object,
+}
+
+async function createMintIx(bubblegum: Program<Bubblegum>,
+  metadata: any,
+  version: Version,
+  payer: Keypair,
+  owner: PublicKey,
+  delegate: PublicKey,
+  merkleSlab: PublicKey,
+  mintAuthority: PublicKey
+): Promise<TransactionInstruction> {
+  return bubblegum.instruction.mint(version, metadata, {
+    accounts: {
+      mintAuthority,
+      authority: await getTreeAuthority(bubblegum, merkleSlab),
+      nonce: await getNonceAccount(bubblegum),
+      gummyrollProgram: GummyrollProgramId,
+      owner,
+      delegate,
+      merkleSlab,
+    },
+    signers: [payer],
+  });
+}
+
+function createRemoveAppendAuthorityIx(
+  bubblegum: Program<Bubblegum>,
+  appendAuthority: Keypair,
+  authorityToRemove: PublicKey,
+  authority: PublicKey,
+): TransactionInstruction {
+  return bubblegum.instruction.removeAppendAuthority({
+    accounts: {
+      appendAuthority: appendAuthority.publicKey,
+      authorityToRemove,
+      authority,
+    },
+    signers: [appendAuthority]
+  })
+}
 
 describe("bubblegum", () => {
   // Configure the client to use the local cluster.
@@ -99,10 +179,7 @@ describe("bubblegum", () => {
       programId: GummyrollProgramId,
     });
 
-    let [authority] = await PublicKey.findProgramAddress(
-      [merkleRollKeypair.publicKey.toBuffer()],
-      Bubblegum.programId
-    );
+    const authority = await getTreeAuthority(Bubblegum, merkleRollKeypair.publicKey);
 
     const initGummyrollIx = Bubblegum.instruction.createTree(
       MAX_DEPTH,
@@ -123,10 +200,7 @@ describe("bubblegum", () => {
       .add(allocAccountIx)
       .add(initGummyrollIx);
 
-    let [nonce] = await PublicKey.findProgramAddress(
-      [Buffer.from("bubblegum")],
-      Bubblegum.programId
-    );
+    const nonce = await getNonceAccount(Bubblegum);
     try {
       const nonceAccount = await Bubblegum.provider.connection.getAccountInfo(
         nonce
@@ -153,6 +227,24 @@ describe("bubblegum", () => {
     
     await assertOnChainMerkleRollProperties(Bubblegum.provider.connection, MAX_DEPTH, MAX_SIZE, authority, new PublicKey(tree.root), merkleRollKeypair.publicKey);
 
+    const treeAuthorityAccount = await Bubblegum.account.gummyrollTreeAuthority.fetch(authority);
+    assert(
+      (treeAuthorityAccount.treeId as PublicKey).toString() === merkleRollKeypair.publicKey.toString(),
+      "Authority initialized treeId incorrectly"
+    );
+    assert(
+      (treeAuthorityAccount.owner as PublicKey).toString() === payer.publicKey.toString(),
+      "Authority initialized owner incorrectly"
+    );
+    assert(
+      (treeAuthorityAccount.delegate as PublicKey).toString() === payer.publicKey.toString(),
+      "Authority initialized delegate incorrectly"
+    );
+    assert(
+      (treeAuthorityAccount.appendAllowlist[0] as PublicKey).toString() === payer.publicKey.toString(),
+      "Authority initialized appendAllowlist incorrectly"
+    );
+
     return [merkleRollKeypair, tree, authority, nonce];
   }
 
@@ -170,35 +262,9 @@ describe("bubblegum", () => {
       nonceAccount = computedNonce;
     });
     it("Mint to tree", async () => {
-      const metadata = {
-        name: "test",
-        symbol: "test",
-        uri: "www.solana.com",
-        sellerFeeBasisPoints: 0,
-        primarySaleHappened: false,
-        isMutable: false,
-        editionNonce: null,
-        tokenStandard: null,
-        tokenProgramVersion: {
-          original: {},
-        },
-        collection: null,
-        uses: null,
-        creators: [],
-      };
+      const metadata = createExampleMetadata("test", "test", "www.solana.com");
       let version = { v0: {} };
-      let mintIx = await Bubblegum.instruction.mint(version, metadata, {
-        accounts: {
-          mintAuthority: payer.publicKey,
-          authority: treeAuthority,
-          nonce: nonceAccount,
-          gummyrollProgram: GummyrollProgramId,
-          owner: payer.publicKey,
-          delegate: payer.publicKey,
-          merkleSlab: merkleRollKeypair.publicKey,
-        },
-        signers: [payer],
-      });
+      const mintIx = await createMintIx(Bubblegum, metadata, version, payer, payer.publicKey, payer.publicKey, merkleRollKeypair.publicKey, payer.publicKey);
       console.log(" - Minting to tree");
       await execute(Bubblegum.provider, [mintIx], [payer], false);
 
@@ -452,6 +518,34 @@ describe("bubblegum", () => {
           commitment: "confirmed",
         }
       );
+    });
+    it("Test that allowlist prevents mints", async () => {
+      const removeAppendAuthorityIx = createRemoveAppendAuthorityIx(
+        Bubblegum,
+        payer,
+        payer.publicKey,
+        treeAuthority,
+      );
+      await execute(Bubblegum.provider, [removeAppendAuthorityIx], [payer], true);
+
+      const metadata = createExampleMetadata("racecar", "test", "www.solana.com")
+      let version = { v0: {} };
+      const mintIx = await createMintIx(
+        Bubblegum,
+        metadata,
+        version,
+        payer,
+        payer.publicKey,
+        payer.publicKey,
+        merkleRollKeypair.publicKey,
+        payer.publicKey,
+      );
+      try {
+        await execute(Bubblegum.provider, [, mintIx], [payer], true, true);
+        assert(false, "This transaction should have failed since the payer is no longer append authority");
+      } catch (e) {
+        assert(true, "Successfully prevented payer from minting");
+      }
     });
   });
 });
