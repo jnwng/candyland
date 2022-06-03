@@ -2,8 +2,7 @@ import * as anchor from "@project-serum/anchor";
 import { keccak_256 } from "js-sha3";
 import { BN, Provider, Program, AccountClient } from "@project-serum/anchor";
 import { Bubblegum } from "../target/types/bubblegum";
-import { Gummyroll } from "../target/types/gummyroll";
-import { Key, Metadata, MetadataArgs, PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
+import { PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
 import {
   PublicKey,
   Keypair,
