@@ -112,15 +112,13 @@ function createRemoveAppendAuthorityIx(
   })
 }
 
-function createSetAppendAuthorityIx(
+function createAddAppendAuthorityIx(
   bubblegum: Program<Bubblegum>,
-  index: number,
   treeDelegate: Keypair,
   newAppendAuthority: PublicKey,
   authority: PublicKey,
 ): TransactionInstruction {
-  return bubblegum.instruction.setAppendAuthority(
-    index,
+  return bubblegum.instruction.addAppendAuthority(
     {
       accounts: {
         treeDelegate: treeDelegate.publicKey,
@@ -243,7 +241,7 @@ describe("bubblegum", () => {
     await Bubblegum.provider.send(tx, [payer, merkleRollKeypair], {
       commitment: "confirmed",
     });
-    
+
     await assertOnChainMerkleRollProperties(Bubblegum.provider.connection, MAX_DEPTH, MAX_SIZE, authority, new PublicKey(tree.root), merkleRollKeypair.publicKey);
 
     const treeAuthorityAccount = await Bubblegum.account.gummyrollTreeAuthority.fetch(authority);
@@ -567,17 +565,23 @@ describe("bubblegum", () => {
       }
     });
     it("Concurrently append into tree", async () => {
-
       // Create 5 random keys, set them as append publickeys
       const ALLOWLIST_SIZE = 5;
       const authIxs = [];
       const appendIxs = [];
       const keypairs = [];
+      const removeInitialAppendAuthorityIx = createRemoveAppendAuthorityIx(
+        Bubblegum,
+        payer,
+        payer.publicKey,
+        treeAuthority
+      );
+      await execute(Bubblegum.provider, [removeInitialAppendAuthorityIx], [payer]);
+
       for (let i = 0; i < ALLOWLIST_SIZE; i++) {
         const keypair = Keypair.generate();
-        const setAppendAuthorityIx = createSetAppendAuthorityIx(
+        const setAppendAuthorityIx = createAddAppendAuthorityIx(
           Bubblegum,
-          i,
           payer,
           keypair.publicKey,
           treeAuthority,
