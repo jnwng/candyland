@@ -17,7 +17,7 @@ pub mod error;
 
 use crate::state::metaplex_anchor::MplTokenMetadata;
 use crate::state::{
-    authority::{GummyrollTreeAuthority, GUMMYROLL_TREE_AUTHORITY_SIZE, APPEND_ALLOWLIST_SIZE},
+    authority::{GummyrollTreeAuthority, AppendAllowlistEntry, GUMMYROLL_TREE_AUTHORITY_SIZE, APPEND_ALLOWLIST_SIZE},
     leaf_schema::{LeafSchema, Version},
     metaplex_adapter::{MetadataArgs, TokenProgramVersion},
     metaplex_anchor::{MasterEdition, TokenMetadata},
@@ -112,13 +112,13 @@ pub struct SetTreeAppendAuthority<'info> {
 pub struct RemoveAppendAuthority<'info> {
     pub append_authority: Signer<'info>,
     /// CHECK: this account is not read from
-    #[account(constraint = authority.append_allowlist.contains(append_authority.key))]
+    #[account(constraint = authority.append_allowlist.iter().position(|&entry| entry.pubkey == append_authority.key()).is_some())]
     pub authority_to_remove: AccountInfo<'info>,
     #[account(
         seeds=[authority.tree_id.as_ref()],
         bump,
         mut, 
-        constraint = (*append_authority.key == authority.owner) || (*append_authority.key == authority.delegate) || authority.append_allowlist.contains(append_authority.key) 
+        constraint = (*append_authority.key == authority.owner) || (*append_authority.key == authority.delegate) || authority.append_allowlist.iter().position(|&entry| entry.pubkey == append_authority.key()).is_some()
     )]
     pub authority: Account<'info, GummyrollTreeAuthority>,
 }
@@ -128,9 +128,10 @@ pub struct Mint<'info> {
     /// CHECK: This account is neither written to nor read from.
     pub mint_authority: Signer<'info>,
     #[account(
+        mut,
         seeds = [merkle_slab.key().as_ref()],
         bump,
-        constraint = authority.append_allowlist.contains(mint_authority.key)
+        constraint = authority.append_allowlist.iter().position(|&entry| entry.pubkey == mint_authority.key()).is_some()
     )]
     pub authority: Account<'info, GummyrollTreeAuthority>,
     #[account(
@@ -377,7 +378,10 @@ pub mod bubblegum {
         ctx.accounts.authority.owner = ctx.accounts.tree_creator.key();
         ctx.accounts.authority.delegate = ctx.accounts.tree_creator.key();
         // By default, enable the tree creator to write to their own tree
-        ctx.accounts.authority.append_allowlist[0] = ctx.accounts.tree_creator.key();
+        ctx.accounts.authority.append_allowlist[0] = AppendAllowlistEntry {
+            pubkey: ctx.accounts.tree_creator.key(), 
+            num_appends: 1 << max_depth 
+        };
 
         let merkle_slab = ctx.accounts.merkle_slab.to_account_info();
         let seed = merkle_slab.key();
@@ -411,11 +415,15 @@ pub mod bubblegum {
 
     pub fn add_append_authority(
         ctx: Context<SetTreeAppendAuthority>,
+        num_appends: u64,
     ) -> Result<()> {
         let empty_key: [u8; 32] = [0; 32];
         for (i, node) in ctx.accounts.authority.append_allowlist.iter().enumerate() {
-            if *node == Pubkey::new(&empty_key) {
-                ctx.accounts.authority.append_allowlist[i] = ctx.accounts.new_append_authority.key();
+            if node.pubkey == Pubkey::new(&empty_key) {
+                ctx.accounts.authority.append_allowlist[i] = AppendAllowlistEntry {
+                    pubkey:ctx.accounts.new_append_authority.key(), 
+                    num_appends 
+                };
                 return Ok(())
             }
         }
@@ -426,12 +434,12 @@ pub mod bubblegum {
         ctx: Context<RemoveAppendAuthority>,
     ) -> Result<()> {
         let mut allowlist = ctx.accounts.authority.append_allowlist.to_vec();
-        match allowlist.iter().position(|&append_auth| append_auth == *ctx.accounts.authority_to_remove.key) {
+        match allowlist.iter().position(|&append_auth| append_auth.pubkey == *ctx.accounts.authority_to_remove.key) {
             Some(idx) => { 
                 allowlist.remove(idx);
                 ctx.accounts.authority.append_allowlist[..allowlist.len()].copy_from_slice(&allowlist);
                 for i in allowlist.len()..APPEND_ALLOWLIST_SIZE {
-                    ctx.accounts.authority.append_allowlist[i] = Pubkey::new_from_array([0; 32])
+                    ctx.accounts.authority.append_allowlist[i] = AppendAllowlistEntry::default();
                 }
                 return Ok(());
             }
@@ -469,6 +477,7 @@ pub mod bubblegum {
         );
         emit!(leaf.to_event());
         nonce.count = nonce.count.saturating_add(1);
+        ctx.accounts.authority.decrement_allowlist(&ctx.accounts.mint_authority.key(), 1)?;
         append_leaf(
             &merkle_slab.key(),
             *ctx.bumps.get("authority").unwrap(),

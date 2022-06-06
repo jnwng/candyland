@@ -8,4 +8,8 @@ pub enum BubblegumError {
     AppendAllowlistIndexOutOfBounds,
     #[msg("Append allowlist has no more spots available")]
     AppendAllowlistFull,
+    #[msg("Append allowlist overflow when incrementing num_appends")]
+    AppendAllowlistIncrementOverflow,
+    #[msg("Append allowlist underflow when decrementing num_appends")]
+    AppendAllowlistIncrementUnderflow,
 }

@@ -102,23 +102,26 @@ function createRemoveAppendAuthorityIx(
   authorityToRemove: PublicKey,
   authority: PublicKey,
 ): TransactionInstruction {
-  return bubblegum.instruction.removeAppendAuthority({
-    accounts: {
-      appendAuthority: appendAuthority.publicKey,
-      authorityToRemove,
-      authority,
-    },
-    signers: [appendAuthority]
-  })
+  return bubblegum.instruction.removeAppendAuthority(
+    {
+      accounts: {
+        appendAuthority: appendAuthority.publicKey,
+        authorityToRemove,
+        authority,
+      },
+      signers: [appendAuthority]
+    })
 }
 
 function createAddAppendAuthorityIx(
   bubblegum: Program<Bubblegum>,
+  numAppends: BN,
   treeDelegate: Keypair,
   newAppendAuthority: PublicKey,
   authority: PublicKey,
 ): TransactionInstruction {
   return bubblegum.instruction.addAppendAuthority(
+    numAppends,
     {
       accounts: {
         treeDelegate: treeDelegate.publicKey,
@@ -258,7 +261,11 @@ describe("bubblegum", () => {
       "Authority initialized delegate incorrectly"
     );
     assert(
-      (treeAuthorityAccount.appendAllowlist[0] as PublicKey).toString() === payer.publicKey.toString(),
+      (treeAuthorityAccount.appendAllowlist[0].pubkey as PublicKey).toString() === payer.publicKey.toString(),
+      "Authority initialized appendAllowlist incorrectly"
+    );
+    assert(
+      (treeAuthorityAccount.appendAllowlist[0].numAppends as BN).toNumber() === 1 << MAX_DEPTH,
       "Authority initialized appendAllowlist incorrectly"
     );
 
@@ -582,6 +589,7 @@ describe("bubblegum", () => {
         const keypair = Keypair.generate();
         const setAppendAuthorityIx = createAddAppendAuthorityIx(
           Bubblegum,
+          new BN(1),
           payer,
           keypair.publicKey,
           treeAuthority,
@@ -606,7 +614,17 @@ describe("bubblegum", () => {
       // All appends should succeed
       const allIxs = [].concat(authIxs, appendIxs);
       const allKeypairs = [payer].concat(keypairs);
-      await execute(Bubblegum.provider, allIxs, allKeypairs, true);
+      await execute(Bubblegum.provider, allIxs, allKeypairs, true, true);
+
+      const treeAuthorityAccount = await Bubblegum.account.gummyrollTreeAuthority.fetch(treeAuthority);
+      console.log(treeAuthorityAccount);
+      for (let i = 0; i < ALLOWLIST_SIZE; i++) {
+        console.log(treeAuthorityAccount.appendAllowlist[i].numAppends);
+        assert(
+          (new BN(0)).eq(treeAuthorityAccount.appendAllowlist[i].numAppends),
+          'Append allowlist was not decremented properly'
+        );
+      }
     });
   });
 });
