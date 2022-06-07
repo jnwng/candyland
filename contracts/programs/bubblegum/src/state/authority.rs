@@ -1,5 +1,6 @@
 use crate::error::BubblegumError;
 use anchor_lang::prelude::*;
+use gummyroll::Append;
 
 pub const GUMMYROLL_TREE_AUTHORITY_SIZE: usize = 296;
 pub const APPEND_ALLOWLIST_SIZE: usize = 5;
@@ -61,16 +62,12 @@ impl GummyrollTreeAuthority {
     }
     pub fn remove_append_authority(&mut self, allowlist_pubkey: &Pubkey) -> Result<()> {
         let mut allowlist = self.append_allowlist.to_vec();
-        match allowlist
-            .iter()
-            .position(|&append_auth| append_auth.pubkey == *allowlist_pubkey)
-        {
-            Some(idx) => {
-                allowlist.remove(idx);
+        let mut entries = allowlist.iter();
+        match entries.position(|&allowlist_entry| allowlist_entry.pubkey == *allowlist_pubkey) {
+            Some(idx_to_remove) => {
+                allowlist.swap_remove(idx_to_remove);
+                allowlist.push(AppendAllowlistEntry::default());
                 self.append_allowlist[..allowlist.len()].copy_from_slice(&allowlist);
-                for i in allowlist.len()..APPEND_ALLOWLIST_SIZE {
-                    self.append_allowlist[i] = AppendAllowlistEntry::default();
-                }
                 return Ok(());
             }
             None => {
